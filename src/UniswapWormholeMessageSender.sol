@@ -76,6 +76,7 @@ contract UniswapWormholeMessageSender {
     IWormholeRelayer private immutable wormholeRelayer;
 
     /**
+     * @param wormholeAddress Address of Wormhole core messaging contract on this chain.
      * @param wormholeRelayerAddress Address of Wormhole relaying messaging contract on this chain.
      */
     constructor(address wormholeAddress, address wormholeRelayerAddress) {
