@@ -14,12 +14,16 @@
  */
 pragma solidity ^0.8.7;
 
+import {IWormholeRelayer, VaaKey} from "wormhole-solidity-sdk/interfaces/IWormholeRelayer.sol";
+import {toWormholeFormat} from "wormhole-solidity-sdk/Utils.sol";
+
 interface IWormhole {
     function publishMessage(uint32 nonce, bytes memory payload, uint8 consistencyLevel)
         external
         payable
-        returns (uint64 sequence);
+       returns (uint64 sequence);
     function messageFee() external view returns (uint256);
+    function chainId() external view returns (uint16);
 }
 
 bytes32 constant messagePayloadVersion = keccak256(
@@ -68,16 +72,28 @@ contract UniswapWormholeMessageSender {
 
     // Wormhole core contract interface
     IWormhole private immutable wormhole;
+    // Wormhole relaying contract interface
+    IWormholeRelayer private immutable wormholeRelayer;
 
     /**
      * @param wormholeAddress Address of Wormhole core messaging contract on this chain.
+     * @param wormholeRelayerAddress Address of Wormhole relaying messaging contract on this chain.
      */
-    constructor(address wormholeAddress) {
+    constructor(address wormholeAddress, address wormholeRelayerAddress) {
         // sanity check constructor args
         require(wormholeAddress != address(0), "Invalid wormhole address");
+        require(wormholeRelayerAddress != address(0), "Invalid wormhole relayer address");
 
         wormhole = IWormhole(wormholeAddress);
+        wormholeRelayer = IWormholeRelayer(wormholeRelayerAddress);
         owner = msg.sender;
+    }
+
+    function quoteMessageFee(uint16 receiverChainId, uint256 receiverValue, uint256 gasLimit) public view returns (uint256 messageFee) {
+        uint256 relayingFee;
+        (relayingFee,) = wormholeRelayer.quoteEVMDeliveryPrice(receiverChainId, receiverValue, gasLimit);
+
+        messageFee = relayingFee + wormhole.messageFee();
     }
 
     /**
@@ -92,11 +108,17 @@ contract UniswapWormholeMessageSender {
         uint256[] memory values,
         bytes[] memory calldatas,
         address messageReceiver,
-        uint16 receiverChainId
+        uint16 receiverChainId,
+        address receiverChainAddress,
+        uint256 gasLimit,
+        address receiverChainRefundAddress
     ) external payable onlyOwner {
-        // cache wormhole instance and verify that the caller sent enough value to cover the Wormhole message fee
+        // cache wormhole instance
         IWormhole _wormhole = wormhole;
-        uint256 messageFee = _wormhole.messageFee();
+        uint256 wormholeMessageFee = wormhole.messageFee();
+
+        uint256 sum = getSum(values);
+        uint256 messageFee = quoteMessageFee(receiverChainId, sum, gasLimit);
 
         require(msg.value == messageFee, "invalid message fee");
         require(receiverChainId != 2, "invalid receiverChainID Ethereum");
@@ -105,8 +127,18 @@ contract UniswapWormholeMessageSender {
         // format the message payload
         bytes memory payload = generateMessagePayload(targets, values, calldatas, messageReceiver, receiverChainId);
 
-        // send the payload by invoking the Wormhole core contract
-        _wormhole.publishMessage{value: messageFee}(NONCE, payload, CONSISTENCY_LEVEL);
+        // publish the payload by invoking the Wormhole core contract
+        uint64 sequence = _wormhole.publishMessage{value: wormholeMessageFee}(NONCE, payload, CONSISTENCY_LEVEL);
+
+        VaaKey[] memory vaaKeys = new VaaKey[](1);
+        vaaKeys[0] = VaaKey({
+            chainId: _wormhole.chainId(),
+            emitterAddress: toWormholeFormat(address(this)),
+            sequence: sequence
+        });
+
+        // request delivery of the payload by invoking the Wormhole relayer contract
+        wormholeRelayer.sendVaasToEvm{value: messageFee - wormholeMessageFee}(receiverChainId, receiverChainAddress, bytes(""), sum, gasLimit, vaaKeys, receiverChainId, receiverChainRefundAddress);
 
         emit MessageSent(payload, messageReceiver);
     }
@@ -124,5 +156,15 @@ contract UniswapWormholeMessageSender {
     modifier onlyOwner() {
         require(msg.sender == owner, "sender not owner");
         _;
+    }
+
+    function getSum(uint256[] memory values) internal pure returns (uint256 valuesSum) {
+         uint256 valuesLength = values.length;
+        for (uint256 i = 0; i < valuesLength;) {
+            valuesSum += values[i];
+            unchecked {
+                i += 1;
+            }
+        }
     }
 }

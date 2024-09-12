@@ -17,6 +17,8 @@ pragma solidity ^0.8.7;
 // solhint-disable-next-line no-global-import
 import "./Structs.sol";
 
+import "wormhole-solidity-sdk/interfaces/IWormholeReceiver.sol";
+
 interface IWormhole {
     function parseAndVerifyVM(bytes calldata encodedVM)
         external
@@ -38,7 +40,7 @@ interface IWormhole {
  * But the following are impossible (not exhaustive):
  * - 1,3,2
  */
-contract UniswapWormholeMessageReceiver {
+contract UniswapWormholeMessageReceiver is IWormholeReceiver {
     string public constant NAME = "Uniswap Wormhole Message Receiver";
     bytes32 public constant EXPECTED_MESSAGE_PAYLOAD_VERSION = keccak256(
         abi.encode(
@@ -89,10 +91,20 @@ contract UniswapWormholeMessageReceiver {
         chainId = _chainId;
     }
 
+    function receiveWormholeMessages(
+        bytes memory, 
+        bytes[] calldata additionalVaas,
+        bytes32,
+        uint16,
+        bytes32 // deliveryHash
+    ) public payable override {
+        receiveMessage(additionalVaas[0]);
+    }
+
     /**
      * @param whMessage Wormhole message relayed from a source chain.
      */
-    function receiveMessage(bytes calldata whMessage) external payable {
+    function receiveMessage(bytes calldata whMessage) public payable {
         (Structs.VM memory vm, bool valid, string memory reason) = wormhole.parseAndVerifyVM(whMessage);
 
         // validate
